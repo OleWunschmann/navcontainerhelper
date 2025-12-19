@@ -1,6 +1,6 @@
 #requires -Version 5.0
 
-[NuGetFeed[]] $NuGetFeedCache = @()
+[System.Collections.Concurrent.ConcurrentBag[NuGetFeed]] $NuGetFeedCache = [System.Collections.Concurrent.ConcurrentBag[NuGetFeed]]::new()
 
 # PROOF OF CONCEPT PREVIEW: This class holds the connection to a NuGet feed
 class NuGetFeed {
@@ -16,7 +16,7 @@ class NuGetFeed {
 
     [hashtable] $orgType = @{}
 
-    [hashtable] $searchResultsCache = @{}
+    [System.Collections.Concurrent.ConcurrentDictionary[string, hashtable]] $searchResultsCache
     [int]       $searchResultsCacheRetentionPeriod
     [string]    $cacheFolder
 
@@ -27,6 +27,7 @@ class NuGetFeed {
         $this.fingerprints = $fingerprints
         $this.searchResultsCacheRetentionPeriod = $nuGetSearchResultsCacheRetentionPeriod
         $this.cacheFolder = $nugetCacheFolder
+        $this.searchResultsCache = [System.Collections.Concurrent.ConcurrentDictionary[string, hashtable]]::new()
 
         # When trusting nuget.org, you should only trust packages signed by an author or packages matching a specific pattern (like using a registered prefix or a full name)
         if ($nuGetServerUrl -like 'https://api.nuget.org/*' -and $patterns.Contains('*') -and (!$fingerprints -or $fingerprints.Contains('*'))) {
@@ -62,7 +63,7 @@ class NuGetFeed {
         $nuGetFeed = $script:NuGetFeedCache | Where-Object { $_.url -eq $nuGetServerUrl -and $_.token -eq $nuGetToken -and (-not (Compare-Object $_.patterns $patterns)) -and (-not (Compare-Object $_.fingerprints $fingerprints)) -and $_.searchResultsCacheRetentionPeriod -eq $nuGetSearchResultsCacheRetentionPeriod }
         if (!$nuGetFeed) {
             $nuGetFeed = [NuGetFeed]::new($nuGetServerUrl, $nuGetToken, $patterns, $fingerprints, $nuGetSearchResultsCacheRetentionPeriod, $nugetCacheFolder)
-            $script:NuGetFeedCache += $nuGetFeed
+            $script:NuGetFeedCache.Add($nuGetFeed)
         }
         return $nuGetFeed
     }
@@ -90,24 +91,25 @@ class NuGetFeed {
 
     [hashtable[]] Search([string] $packageName) {
         $useCache = $this.searchResultsCacheRetentionPeriod -gt 0
-        $hasCache = $this.searchResultsCache.ContainsKey($packageName)
+        $cacheEntry = $null
+        $hasCache = $this.searchResultsCache.TryGetValue($packageName, [ref]$cacheEntry)
         if ($hasCache) {
             if ($useCache) {
                 # Clear cache older than the retention period
-                $clearCache = $this.searchResultsCache[$packageName].timestamp.AddSeconds($this.searchResultsCacheRetentionPeriod) -lt (Get-Date)
+                $clearCache = $cacheEntry.timestamp.AddSeconds($this.searchResultsCacheRetentionPeriod) -lt (Get-Date)
             } else {
                 # Clear cache if we are not using it
                 $clearCache = $true
             }
             if ($clearCache) {
-                $this.searchResultsCache.Remove($packageName)
+                $this.searchResultsCache.TryRemove($packageName, [ref]$null)
                 $hasCache = $false
             }
         }
 
         if ($useCache -and $hasCache) { 
             Write-Host "Search package using cache"
-            $matching = $this.searchResultsCache[$packageName].matching
+            $matching = $cacheEntry.matching
         } 
         elseif ($this.searchQueryServiceUrl -match '^https://nuget.pkg.github.com/(.*)/query$') {
             # GitHub support for SearchQueryService is unstable and is not usable
@@ -134,14 +136,15 @@ class NuGetFeed {
             }
             $cacheKey = "GitHubPackages:$($this.orgType[$organization])/$organization"
             $matching = @()
-            if ($this.searchResultsCacheRetentionPeriod -gt 0 -and $this.searchResultsCache.ContainsKey($cacheKey)) {
-                if ($this.searchResultsCache[$cacheKey].timestamp.AddSeconds($this.searchResultsCacheRetentionPeriod) -lt (Get-Date)) {
+            $gitHubCacheEntry = $null
+            if ($this.searchResultsCacheRetentionPeriod -gt 0 -and $this.searchResultsCache.TryGetValue($cacheKey, [ref]$gitHubCacheEntry)) {
+                if ($gitHubCacheEntry.timestamp.AddSeconds($this.searchResultsCacheRetentionPeriod) -lt (Get-Date)) {
                     Write-Host "Cache expired, removing cache $cacheKey"
-                    $this.searchResultsCache.Remove($cacheKey)
+                    $this.searchResultsCache.TryRemove($cacheKey, [ref]$null)
                 }
                 else {
                     Write-Host "Search available packages using cache $cacheKey"
-                    $matching = $this.searchResultsCache[$cacheKey].matching
+                    $matching = $gitHubCacheEntry.matching
                     Write-Host "$($matching.Count) packages found"
                 }
             }
@@ -543,7 +546,7 @@ class NuGetFeed {
             # Clear matching search results caches
             @( $this.searchResultsCache.Keys ) | 
                 Where-Object { $package -like "*$($_)*" -or $_ -like 'GitHubPackages:*' } | 
-                ForEach-Object { $this.searchResultsCache.Remove($_) }
+                ForEach-Object { $this.searchResultsCache.TryRemove($_, [ref]$null) }
         }
         catch [System.Net.WebException] {
             if ($_.Exception.Status -eq "ProtocolError" -and $_.Exception.Response -is [System.Net.HttpWebResponse]) {
