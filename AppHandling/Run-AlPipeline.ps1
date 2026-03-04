@@ -1897,9 +1897,18 @@ Write-Host -ForegroundColor Yellow @'
 Measure-Command {
     Write-Host "Missing TestApp dependencies"
     $missingTestAppDependencies | ForEach-Object { Write-Host "- $_" }
+    if ($useCompilerFolder) {
+        $appSymbolsFolder = Join-Path ([System.IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
+        New-Item -Path $appSymbolsFolder -ItemType Directory -Force | Out-Null
+    }
+    else {
+        $appSymbolsFolder = $packagesFolder
+    }
     $Parameters = @{
         "missingDependencies" = @($unknownTestAppDependencies | Where-Object { $missingTestAppDependencies -contains "$_".Split(':')[0] })
-        "appSymbolsFolder" = $packagesFolder
+        "appSymbolsFolder" = $appSymbolsFolder
+        "installedApps" = $installedApps
+        "installedCountry" = $artifactUrl.Substring($artifactUrl.LastIndexOf('/')+1)
     }
     if (!($useCompilerFolder -or $filesOnly)) {
         $Parameters += @{
@@ -1908,6 +1917,11 @@ Measure-Command {
         }
     }
     Invoke-Command -ScriptBlock $InstallMissingDependencies -ArgumentList $Parameters
+    if ($useCompilerFolder) {
+        Copy-Item -Path (Join-Path $appSymbolsFolder '*') -Destination $packagesFolder -Force
+        Remove-Item -Path $appSymbolsFolder -Recurse -Force
+        $appsBeforeTestApps += @(Join-Path $packagesFolder $_.Name)
+    }
 } | ForEach-Object { Write-Host -ForegroundColor Yellow "`nInstalling testapp dependencies took $([int]$_.TotalSeconds) seconds" }
 Write-GroupEnd
 }
