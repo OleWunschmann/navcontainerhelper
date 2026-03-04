@@ -528,6 +528,56 @@ function GetInstalledApps {
     Write-GroupEnd
 }
 
+function InstallMissingTestAppDependencies {
+    if (!$missingTestAppDependencies) {
+        return
+    }
+
+    Write-GroupStart -Message "Installing test app dependencies"
+    Write-Host -ForegroundColor Yellow @'
+
+  _____           _        _ _ _               _            _                             _                           _                 _
+ |_   _|         | |      | | (_)             | |          | |                           | |                         | |               (_)
+   | |  _ __  ___| |_ __ _| | |_ _ __   __ _  | |_ ___  ___| |_    __ _ _ __  _ __     __| | ___ _ __   ___ _ __   __| | ___ _ __   ___ _  ___  ___
+   | | | '_ \/ __| __/ _` | | | | '_ \ / _` | | __/ _ \/ __| __|  / _` | '_ \| '_ \   / _` |/ _ \ '_ \ / _ \ '_ \ / _` |/ _ \ '_ \ / __| |/ _ \/ __|
+  _| |_| | | \__ \ || (_| | | | | | | | (_| | | ||  __/\__ \ |_  | (_| | |_) | |_) | | (_| |  __/ |_) |  __/ | | | (_| |  __/ | | | (__| |  __/\__ \
+ |_____|_| |_|___/\__\__,_|_|_|_|_| |_|\__, |  \__\___||___/\__|  \__,_| .__/| .__/   \__,_|\___| .__/ \___|_| |_|\__,_|\___|_| |_|\___|_|\___||___/
+                                        __/ |                          | |   | |                | |
+                                       |___/                           |_|   |_|                |_|
+
+'@
+    Measure-Command {
+        Write-Host "Missing TestApp dependencies"
+        $missingTestAppDependencies | ForEach-Object { Write-Host "- $_" }
+        if ($useCompilerFolder) {
+            $appSymbolsFolder = Join-Path ([System.IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
+            New-Item -Path $appSymbolsFolder -ItemType Directory -Force | Out-Null
+        }
+        else {
+            $appSymbolsFolder = $packagesFolder
+        }
+        $Parameters = @{
+            "missingDependencies" = @($unknownTestAppDependencies | Where-Object { $missingTestAppDependencies -contains "$_".Split(':')[0] })
+            "appSymbolsFolder" = $appSymbolsFolder
+            "installedApps" = $installedApps
+            "installedCountry" = $artifactUrl.Substring($artifactUrl.LastIndexOf('/')+1)
+        }
+        if (!($useCompilerFolder -or $filesOnly)) {
+            $Parameters += @{
+                "containerName" = (GetBuildContainer)
+                "tenant" = $tenant
+            }
+        }
+        Invoke-Command -ScriptBlock $InstallMissingDependencies -ArgumentList $Parameters
+        if ($useCompilerFolder) {
+            Copy-Item -Path (Join-Path $appSymbolsFolder '*') -Destination $packagesFolder -Force
+            Remove-Item -Path $appSymbolsFolder -Recurse -Force
+            $appsBeforeTestApps += @(Join-Path $packagesFolder $_.Name)
+        }
+    } | ForEach-Object { Write-Host -ForegroundColor Yellow "`nInstalling testapp dependencies took $([int]$_.TotalSeconds) seconds" }
+    Write-GroupEnd
+}
+
 $script:existingContainerName = ''
 $script:existingCompilerFolder = ''
 
@@ -1669,49 +1719,7 @@ $installedApps = @(GetInstalledApps -bcAuthContext $bcAuthContext -environment $
 if ($installedApps) {
     $missingTestAppDependencies = @($missingTestAppDependencies | Where-Object { $installedApps.Id -notcontains $_ })
 }
-if ($missingTestAppDependencies) {
-Write-GroupStart -Message "Installing test app dependencies"
-Write-Host -ForegroundColor Yellow @'
-  _____           _        _ _ _               _            _                             _                           _                 _
- |_   _|         | |      | | (_)             | |          | |                           | |                         | |               (_)
-   | |  _ __  ___| |_ __ _| | |_ _ __   __ _  | |_ ___  ___| |_    __ _ _ __  _ __     __| | ___ _ __   ___ _ __   __| | ___ _ __   ___ _  ___  ___
-   | | | '_ \/ __| __/ _` | | | | '_ \ / _` | | __/ _ \/ __| __|  / _` | '_ \| '_ \   / _` |/ _ \ '_ \ / _ \ '_ \ / _` |/ _ \ '_ \ / __| |/ _ \/ __|
-  _| |_| | | \__ \ || (_| | | | | | | | (_| | | ||  __/\__ \ |_  | (_| | |_) | |_) | | (_| |  __/ |_) |  __/ | | | (_| |  __/ | | | (__| |  __/\__ \
- |_____|_| |_|___/\__\__,_|_|_|_|_| |_|\__, |  \__\___||___/\__|  \__,_| .__/| .__/   \__,_|\___| .__/ \___|_| |_|\__,_|\___|_| |_|\___|_|\___||___/
-                                        __/ |                          | |   | |                | |
-                                       |___/                           |_|   |_|                |_|
-'@
-Measure-Command {
-    Write-Host "Missing TestApp dependencies"
-    $missingTestAppDependencies | ForEach-Object { Write-Host "- $_" }
-    if ($useCompilerFolder) {
-        $appSymbolsFolder = Join-Path ([System.IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
-        New-Item -Path $appSymbolsFolder -ItemType Directory -Force | Out-Null
-    }
-    else {
-        $appSymbolsFolder = $packagesFolder
-    }
-    $Parameters = @{
-        "missingDependencies" = @($unknownTestAppDependencies | Where-Object { $missingTestAppDependencies -contains "$_".Split(':')[0] })
-        "appSymbolsFolder" = $appSymbolsFolder
-        "installedApps" = $installedApps
-        "installedCountry" = $artifactUrl.Substring($artifactUrl.LastIndexOf('/')+1)
-    }
-    if (!($useCompilerFolder -or $filesOnly)) {
-        $Parameters += @{
-            "containerName" = (GetBuildContainer)
-            "tenant" = $tenant
-        }
-    }
-    Invoke-Command -ScriptBlock $InstallMissingDependencies -ArgumentList $Parameters
-    if ($useCompilerFolder) {
-        Copy-Item -Path (Join-Path $appSymbolsFolder '*') -Destination $packagesFolder -Force
-        Remove-Item -Path $appSymbolsFolder -Recurse -Force
-        $appsBeforeTestApps += @(Join-Path $packagesFolder $_.Name)
-    }
-} | ForEach-Object { Write-Host -ForegroundColor Yellow "`nInstalling testapp dependencies took $([int]$_.TotalSeconds) seconds" }
-Write-GroupEnd
-}
+InstallMissingTestAppDependencies
 }
 
 if (-not $testCountry) {
@@ -1882,49 +1890,7 @@ $installedApps = @(GetInstalledApps -bcAuthContext $bcAuthContext -environment $
 if ($installedApps) {
     $missingTestAppDependencies = @($missingTestAppDependencies | Where-Object { $installedApps.Id -notcontains $_ })
 }
-if ($missingTestAppDependencies) {
-Write-GroupStart -Message "Installing test app dependencies"
-Write-Host -ForegroundColor Yellow @'
-  _____           _        _ _ _               _            _                             _                           _                 _
- |_   _|         | |      | | (_)             | |          | |                           | |                         | |               (_)
-   | |  _ __  ___| |_ __ _| | |_ _ __   __ _  | |_ ___  ___| |_    __ _ _ __  _ __     __| | ___ _ __   ___ _ __   __| | ___ _ __   ___ _  ___  ___
-   | | | '_ \/ __| __/ _` | | | | '_ \ / _` | | __/ _ \/ __| __|  / _` | '_ \| '_ \   / _` |/ _ \ '_ \ / _ \ '_ \ / _` |/ _ \ '_ \ / __| |/ _ \/ __|
-  _| |_| | | \__ \ || (_| | | | | | | | (_| | | ||  __/\__ \ |_  | (_| | |_) | |_) | | (_| |  __/ |_) |  __/ | | | (_| |  __/ | | | (__| |  __/\__ \
- |_____|_| |_|___/\__\__,_|_|_|_|_| |_|\__, |  \__\___||___/\__|  \__,_| .__/| .__/   \__,_|\___| .__/ \___|_| |_|\__,_|\___|_| |_|\___|_|\___||___/
-                                        __/ |                          | |   | |                | |
-                                       |___/                           |_|   |_|                |_|
-'@
-Measure-Command {
-    Write-Host "Missing TestApp dependencies"
-    $missingTestAppDependencies | ForEach-Object { Write-Host "- $_" }
-    if ($useCompilerFolder) {
-        $appSymbolsFolder = Join-Path ([System.IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
-        New-Item -Path $appSymbolsFolder -ItemType Directory -Force | Out-Null
-    }
-    else {
-        $appSymbolsFolder = $packagesFolder
-    }
-    $Parameters = @{
-        "missingDependencies" = @($unknownTestAppDependencies | Where-Object { $missingTestAppDependencies -contains "$_".Split(':')[0] })
-        "appSymbolsFolder" = $appSymbolsFolder
-        "installedApps" = $installedApps
-        "installedCountry" = $artifactUrl.Substring($artifactUrl.LastIndexOf('/')+1)
-    }
-    if (!($useCompilerFolder -or $filesOnly)) {
-        $Parameters += @{
-            "containerName" = (GetBuildContainer)
-            "tenant" = $tenant
-        }
-    }
-    Invoke-Command -ScriptBlock $InstallMissingDependencies -ArgumentList $Parameters
-    if ($useCompilerFolder) {
-        Copy-Item -Path (Join-Path $appSymbolsFolder '*') -Destination $packagesFolder -Force
-        Remove-Item -Path $appSymbolsFolder -Recurse -Force
-        $appsBeforeTestApps += @(Join-Path $packagesFolder $_.Name)
-    }
-} | ForEach-Object { Write-Host -ForegroundColor Yellow "`nInstalling testapp dependencies took $([int]$_.TotalSeconds) seconds" }
-Write-GroupEnd
-}
+InstallMissingTestAppDependencies
 }
 
 Write-GroupStart -Message "Compiling test apps"
